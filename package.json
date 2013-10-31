@@ -1,0 +1,13 @@
+{
+  "name": "pd",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "start": "nodemon pd.coffee"
+  },
+  "dependencies": {
+    "node-inspector": "*",
+    "nodemon": "*",
+    "seed-random": "*"
+  }
+}
