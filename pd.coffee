@@ -2,85 +2,63 @@ fs = require 'fs'
 pnglib = require "./pnglib"
 seedRandom = require 'seed-random'
 
+TYPE = (obj) ->
+  Object.prototype.toString.call(obj).slice(8, -1)
+
 SHAPES = [
   """
-  111111111111
-  122222222221
-  122222222221
-  122222222221
-  111111112221
-         12221
-         12221
-         12221
-         12221
-         12221
-         12221
-         11111
+  ############
+  #..........#
+  #..........#
+  ########...#
+         #...#
+         #...#
+         #...#
+         #####
   """
   """
-  111111111111
-  122222222221
-  122222222221
-  122222222221
-  122211111111
-  12221
-  12221
-  12221
-  12221
-  12221
-  12221
-  11111
+  ############
+  #..........#
+  #..........#
+  #...########
+  #...#
+  #...#
+  #####
   """
   """
-  11111
-  12221
-  12221
-  12221
-  12221
-  12221
-  12221
-  122211111111
-  122222222221
-  122222222221
-  122222222221
-  111111111111
+  #####
+  #...#
+  #...########
+  #..........#
+  #..........#
+  ############
   """
   """
-         11111
-         12221
-         12221
-         12221
-         12221
-         12221
-         12221
-  111111112221
-  122222222221
-  122222222221
-  122222222221
-  111111111111
-  """
-  """
-  1111111111111111111111111111
-   1122222222222222222222222211
-    1122222222222222222222222211
-     1122222222222222222222222211
-      1122222222222222222222222211
-       1122222222222222222222222211
-        1122222222222222222222222211
-         1122222222222222222222222211
-          1122222222222222222222222211
-           1122222222222222222222222211
-            1111111111111111111111111111
+      ####
+      #..#
+      #..#
+      #..#
+      #..#
+      #..#
+      #..#
+  #####..#
+  #......#
+  #......#
+  #......#
+  ########
   """
 ]
 
+EMPTY = 0
+WALL = 1
+DOOR = 2
+FIRST_ROOM_ID = 5
+
 valueToColor = (p, v) ->
   switch
-    when v == 1 then return p.color 32, 32, 32
-    when v == 2 then return p.color 192, 0, 0
-    when v == 3 then return p.color 255, 200, 255
-    when v == 4 then return p.color 200, 255, 200
-    when v >= 5 then return p.color 0, 5 + Math.min(240, 15 + (v * 2)), 15 + Math.min(240, (Math.max(0, v-256) * 2))
+    when v == WALL then return p.color 32, 32, 32
+    when v == DOOR then return p.color 128, 128, 128
+    when v >= FIRST_ROOM_ID then return p.color 0, 0, 5 + Math.min(240, 15 + (v * 2))
   return p.color 0, 0, 0
 
 class Rect
@@ -117,20 +95,20 @@ class Rect
   toString: -> "{ (#{@l}, #{@t}) -> (#{@r}, #{@b}) #{@w()}x#{@h()}, area: #{@area()}, aspect: #{@aspect()}, squareness: #{@squareness()} }"
 
 class RoomTemplate
-  constructor: (@width, @height, @color) ->
+  constructor: (@width, @height, @roomid) ->
     @grid = new Buffer(@width * @height)
     @generateShape()
 
   generateShape: ->
     for i in [0...@width]
       for j in [0...@height]
-        @set(i, j, @color)
+        @set(i, j, @roomid)
     for i in [0...@width]
-      @set(i, 0, 1)
-      @set(i, @height - 1, 1)
+      @set(i, 0, WALL)
+      @set(i, @height - 1, WALL)
     for j in [0...@height]
-      @set(0, j, 1)
-      @set(@width - 1, j, 1)
+      @set(0, j, WALL)
+      @set(@width - 1, j, WALL)
 
   rect: (x, y) ->
     return new Rect x, y, x + @width, y + @height
@@ -138,20 +116,57 @@ class RoomTemplate
   set: (i, j, v) ->
     @grid[i + (j * @width)] = v
 
+  get: (map, x, y, i, j) ->
+    if i >= 0 and i < @width and j >= 0 and j < @height
+      v = @grid[i + (j * @width)]
+      return v if v != EMPTY
+    return map.get x + i, y + j
+
   place: (map, x, y) ->
     for i in [0...@width]
       for j in [0...@height]
         v = @grid[i + (j * @width)]
-        map.grid[x + i + ((y + j) * map.width)] = v if v
+        map.grid[x + i + ((y + j) * map.width)] = v if v != EMPTY
 
   fits: (map, x, y) ->
     for i in [0...@width]
       for j in [0...@height]
         mv = map.grid[x + i + ((y + j) * map.width)]
         sv = @grid[i + (j * @width)]
-        if mv > 0 and sv > 0 and (mv != 1 or sv != 1)
+        if mv != EMPTY and sv != EMPTY and (mv != WALL or sv != WALL)
           return false
     return true
+
+  doorEligible: (map, x, y, i, j) ->
+    wallNeighbors = 0
+    roomsSeen = {}
+    values = [
+      @get(map, x, y, i + 1, j)
+      @get(map, x, y, i - 1, j)
+      @get(map, x, y, i, j + 1)
+      @get(map, x, y, i, j - 1)
+    ]
+    for v in values
+      if v
+        if v == 1
+          wallNeighbors++
+        else if v != 2
+          roomsSeen[v] = 1
+    rooms = Object.keys(roomsSeen).sort (a, b) -> a-b
+    rooms = rooms.map (room) -> parseInt(room)
+    roomCount = rooms.length
+    if (wallNeighbors == 2) and (roomCount == 2) and (@roomid in rooms)
+      if (values[0] == values[1]) or (values[2] == values[3])
+        return rooms
+    return [-1, -1]
+
+  doorLocation: (map, x, y) ->
+    for j in [0...@height]
+      for i in [0...@width]
+        rooms = @doorEligible(map, x, y, i, j)
+        if rooms[0] != -1 and @roomid in rooms
+          return [i, j]
+    return [-1, -1]
 
   measure: (map, x, y) ->
     bboxTemp = map.bbox.clone()
@@ -163,53 +178,60 @@ class RoomTemplate
     minArea = map.width * map.height
     minX = -1
     minY = -1
-    for i in [0 ... map.width - @width]
-      for j in [0 ... map.height - @height]
+    doorLocation = [-1, -1]
+    searchL = map.bbox.l - @width
+    searchR = map.bbox.r
+    searchT = map.bbox.t - @height
+    searchB = map.bbox.b
+    for i in [searchL ... searchR]
+      for j in [searchT ... searchB]
         if @fits(map, i, j)
           [area, squareness] = @measure map, i, j
-          # console.log "(#{i}, #{j}) area: #{area}, squareness #{squareness}"
           if area <= minArea and squareness <= minSquareness
-            # console.log "(#{i}, #{j}) BETTER FIT area: #{area}, squareness #{squareness}"
-            minArea = area
-            minSquareness = squareness
-            minX = i
-            minY = j
-    return [minX, minY]
+            location = @doorLocation map, i, j
+            if location[0] != -1
+              doorLocation = location
+              minArea = area
+              minSquareness = squareness
+              minX = i
+              minY = j
+    return [minX, minY, doorLocation]
 
 class ShapeRoomTemplate extends RoomTemplate
-  constructor: (shape, color) ->
+  constructor: (shape, roomid) ->
     @lines = shape.split("\n")
     w = 0
     for line in @lines
       w = Math.max(w, line.length)
     @width = w
     @height = @lines.length
-    super @width, @height, color
+    super @width, @height, roomid
 
   generateShape: ->
     for j in [0...@height]
       for i in [0...@width]
-        @set(i, j, 0)
+        @set(i, j, EMPTY)
     i = 0
     j = 0
     for line in @lines
       for c in line.split("")
-        color = switch c
-          when '1' then 1
-          when '2' then @color
+        v = switch c
+          when '.' then @roomid
+          when '#' then WALL
           else 0
-        if color
-          @set(i, j, color)
+        if v
+          @set(i, j, v)
         i++
       j++
       i = 0
 
 class Room
   constructor: (@rect) ->
-    console.log "room created #{@rect}"
+    # console.log "room created #{@rect}"
 
 class Map
   constructor: (@width, @height, @seed) ->
+    @timerReset()
     @randReset()
     @grid = new Buffer(@width * @height)
     @bbox = new Rect 0, 0, 0, 0
@@ -217,7 +239,7 @@ class Map
 
     for j in [0...H]
       for i in [0...W]
-        @set(i, j, 0)
+        @set(i, j, EMPTY)
 
   randReset: ->
     @rng = seedRandom(@seed)
@@ -225,7 +247,17 @@ class Map
   rand: (v) ->
     return Math.floor(@rng() * v)
 
-  outputPNG: ->
+  timerReset: ->
+    @timer = process.hrtime()
+
+  timerNote: (note) ->
+    # taken from some snippet on stackoverflow
+    precision = 3
+    elapsed = process.hrtime(@timer)[1] / 1000000
+    console.log process.hrtime(@timer)[0] + " s, " + elapsed.toFixed(precision) + " ms - " + note
+    @timerReset()
+
+  outputPNG: (filename) ->
     GRIDSIZE = 10
     p = new pnglib GRIDSIZE * @width, GRIDSIZE * @height, 256
     background = p.color 0, 0, 0, 255
@@ -237,7 +269,7 @@ class Map
           for b in [0...GRIDSIZE]
             p.buffer[p.index((i * GRIDSIZE) + a, (j * GRIDSIZE) + b)] = if (a and b) then c else background
 
-    fs.writeFile('output.html', '<img src="data:image/png;base64,'+p.getBase64()+'">')
+    fs.writeFileSync(filename, '<img src="data:image/png;base64,'+p.getBase64()+'">')
 
   set: (i, j, v) ->
     @grid[i + (j * @width)] = v
@@ -248,80 +280,50 @@ class Map
     return 0
 
   addRoom: (roomTemplate, x, y) ->
-    console.log "placing room at #{x}, #{y}"
+    # console.log "placing room at #{x}, #{y}"
     roomTemplate.place this, x, y
     r = roomTemplate.rect(x, y)
     @rooms.push new Room r
     @bbox.expand(r)
-    console.log "new map bbox #{@bbox}"
+    # console.log "new map bbox #{@bbox}"
 
-  randomRoomTemplate: (color) ->
+  randomRoomTemplate: (roomid) ->
     r = @rand(100)
     switch
-      when r > 90 then return new ShapeRoomTemplate SHAPES[@rand(SHAPES.length)], color
-    return new RoomTemplate 4 + @rand(5), 4 + @rand(5), color
+      when  0 < r < 10 then return new RoomTemplate 3, 5 + @rand(10), roomid                  # vertical corridor
+      when 10 < r < 20 then return new RoomTemplate 5 + @rand(10), 3, roomid                  # horizontal corridor
+      when 20 < r < 30 then return new ShapeRoomTemplate SHAPES[@rand(SHAPES.length)], roomid # random shape from SHAPES
+    return new RoomTemplate 4 + @rand(5), 4 + @rand(5), roomid                                # generic rectangular room
 
-  generateRoom: (color) ->
-    roomTemplate = @randomRoomTemplate color
+  generateRoom: (roomid) ->
+    roomTemplate = @randomRoomTemplate roomid
     if @rooms.length == 0
       x = Math.floor((@width / 2) - (roomTemplate.width / 2))
       y = Math.floor((@height / 2) - (roomTemplate.height / 2))
       @addRoom roomTemplate, x, y
     else
-      [x, y] = roomTemplate.findBestSpot(this)
+      [x, y, doorLocation] = roomTemplate.findBestSpot(this)
       if x < 0
         return false
+      roomTemplate.set doorLocation[0], doorLocation[1], 2
       @addRoom roomTemplate, x, y
-
     return true
 
   generateRooms: (count) ->
-    @randReset()
     for i in [0...count]
-      @generateRoom i+5
+      roomid = FIRST_ROOM_ID + i
 
-  doorEligible: (x, y) ->
-    wallNeighbors = 0
-    roomsSeen = {}
-    values = [
-      @get(x + 1, y)
-      @get(x - 1, y)
-      @get(x, y + 1)
-      @get(x, y - 1)
-    ]
-    for v in values
-      if v
-        if v == 1
-          wallNeighbors++
-        else if v != 2
-          roomsSeen[v] = 1
-    rooms = Object.keys(roomsSeen).sort (a, b) -> a-b
-    roomCount = rooms.length
-    if wallNeighbors == 2 and roomCount == 2
-      console.log "rooms: #{rooms}"
-      if @get(x + 1, y) == @get(x - 1, y) or @get(x, y + 1) == @get(x, y - 1)
-        return rooms
-    return [-1, -1]
-
-  generateDoors: ->
-    connectedRooms = {}
-    for j in [0...@height]
-      for i in [0...@width]
-        [fromRoom, toRoom] = @doorEligible(i, j)
-        if fromRoom != -1
-          doorKey = "#{fromRoom}-#{toRoom}"
-          if !connectedRooms[doorKey] or @rand(5) > 0
-            if connectedRooms[doorKey]
-              @grid[connectedRooms[doorKey][0] + (connectedRooms[doorKey][1] * @width)] = 1
-            console.log "connecting room #{fromRoom} to #{toRoom}"
-            @grid[i + (j * @width)] = 2
-            connectedRooms[doorKey] = [i, j]
+      @timerReset()
+      added = false
+      while not added
+        added = @generateRoom roomid
 
 W = 80
 H = 80
-currentSeed = 13
-map = new Map W, H, currentSeed
-
-map.generateRooms(200)
-map.generateDoors()
-map.outputPNG()
+if not fs.existsSync 'output'
+  fs.mkdirSync 'output'
+for seed in [1..10]
+  map = new Map W, H, seed
+  map.generateRooms(20)
+  map.timerNote "generated seed #{seed}"
+  map.outputPNG("output/seed#{seed}.html")
